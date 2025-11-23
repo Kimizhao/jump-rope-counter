@@ -5,7 +5,7 @@ import { Camera } from '@mediapipe/camera_utils';
 import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
 import { JumpDetector } from '../utils/poseUtils';
 import { speak } from '../utils/speech';
-import { playJumpSound } from '../utils/sound';
+import { playJumpSound, initAudio } from '../utils/sound';
 import './JumpCounter.css';
 
 const JumpCounter = () => {
@@ -148,12 +148,11 @@ const JumpCounter = () => {
     };
 
     const startSession = () => {
+        // Initialize Audio Context on user interaction (Mobile support)
+        initAudio();
+
         // Request Fullscreen immediately on user interaction
-        if (videoWrapperRef.current && document.fullscreenElement === null) {
-            videoWrapperRef.current.requestFullscreen().catch(err => {
-                console.log(`Error attempting to enable fullscreen: ${err.message}`);
-            });
-        }
+        enterFullscreen(videoWrapperRef.current);
 
         setGameState('COUNTDOWN');
         setCountdown(5);
@@ -175,6 +174,18 @@ const JumpCounter = () => {
                 setGameState('ACTIVE');
             }
         }, 1000);
+    };
+
+    const enterFullscreen = (element) => {
+        if (!element) return;
+
+        if (element.requestFullscreen) {
+            element.requestFullscreen().catch(err => console.log(err));
+        } else if (element.webkitRequestFullscreen) { /* Safari */
+            element.webkitRequestFullscreen();
+        } else if (element.msRequestFullscreen) { /* IE11 */
+            element.msRequestFullscreen();
+        }
     };
 
     const stopSession = () => {
@@ -211,7 +222,7 @@ const JumpCounter = () => {
     return (
         <div className="jump-counter-container">
             <div
-                className="video-wrapper"
+                className={`video-wrapper ${gameState === 'ACTIVE' ? 'active-mode' : ''}`}
                 ref={videoWrapperRef}
                 onMouseMove={handleInteraction}
                 onTouchStart={handleInteraction}

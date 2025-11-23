@@ -1,5 +1,22 @@
 // Simple Web Audio API context
+// We defer creation or ensure we handle suspension correctly
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+export const initAudio = () => {
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+    // Play a silent sound to unlock audio on some devices
+    const oscillator = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    oscillator.type = 'sine';
+    oscillator.frequency.value = 440;
+    gainNode.gain.value = 0; // Silent
+    oscillator.start();
+    oscillator.stop(audioCtx.currentTime + 0.01);
+};
 
 export const playJumpSound = () => {
     if (audioCtx.state === 'suspended') {
