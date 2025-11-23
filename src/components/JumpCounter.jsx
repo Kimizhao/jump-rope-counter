@@ -4,8 +4,8 @@ import { Pose, POSE_CONNECTIONS } from '@mediapipe/pose';
 import { Camera } from '@mediapipe/camera_utils';
 import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
 import { JumpDetector } from '../utils/poseUtils';
-import { speak } from '../utils/speech';
-import { playJumpSound, initAudio } from '../utils/sound';
+import { speak, initSpeech } from '../utils/speech';
+import { playJumpSound, initAudio, playCountdownBeep, playStartBeep, playFinishBeep } from '../utils/sound';
 import './JumpCounter.css';
 
 const JumpCounter = () => {
@@ -44,6 +44,8 @@ const JumpCounter = () => {
 
     // Timer Logic
     useEffect(() => {
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
         if (gameState === 'ACTIVE') {
             timerRef.current = setInterval(() => {
                 setRemainingTime(prev => {
@@ -51,10 +53,17 @@ const JumpCounter = () => {
 
                     // Countdown warning logic
                     if (newValue <= 5 && newValue > 0) {
-                        speak(newValue.toString());
+                        if (isMobile) {
+                            playCountdownBeep();
+                        } else {
+                            speak(newValue.toString());
+                        }
                     }
 
                     if (newValue <= 0) {
+                        if (isMobile) {
+                            playFinishBeep();
+                        }
                         clearInterval(timerRef.current);
                         finishSession();
                         return 0;
@@ -150,6 +159,8 @@ const JumpCounter = () => {
     const startSession = () => {
         // Initialize Audio Context on user interaction (Mobile support)
         initAudio();
+        // Initialize Speech Synthesis
+        initSpeech();
 
         // Request Fullscreen immediately on user interaction
         enterFullscreen(videoWrapperRef.current);
@@ -157,7 +168,14 @@ const JumpCounter = () => {
         setGameState('COUNTDOWN');
         setCountdown(5);
         setRemainingTime(selectedDuration); // Reset timer
-        speak('5');
+
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+        if (isMobile) {
+            playCountdownBeep(); // F1 Beep for mobile
+        } else {
+            speak('5'); // Voice for desktop
+        }
 
         let currentCount = 5;
         const timer = setInterval(() => {
@@ -165,9 +183,18 @@ const JumpCounter = () => {
             setCountdown(currentCount);
 
             if (currentCount > 0) {
-                speak(currentCount.toString());
+                if (isMobile) {
+                    playCountdownBeep();
+                } else {
+                    speak(currentCount.toString());
+                }
             } else if (currentCount === 0) {
-                speak('开始');
+                if (isMobile) {
+                    playStartBeep();
+                } else {
+                    speak('开始');
+                }
+
                 clearInterval(timer);
                 detectorRef.current.reset();
                 setCount(0);

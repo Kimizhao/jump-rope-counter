@@ -28,6 +28,14 @@ export const speak = (text, lang = 'zh-CN') => {
     window.speechSynthesis.speak(utterance);
 };
 
+// Initialize speech engine (unlock on mobile)
+export const initSpeech = () => {
+    if (!window.speechSynthesis) return;
+    const utterance = new SpeechSynthesisUtterance(" ");
+    utterance.volume = 0; // Silent
+    window.speechSynthesis.speak(utterance);
+};
+
 // Pre-load voices (they load asynchronously in some browsers)
 if (window.speechSynthesis) {
     window.speechSynthesis.getVoices();
