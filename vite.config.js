@@ -9,6 +9,9 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
+      workbox: {
+        maximumFileSizeToCacheInBytes: 10 * 1024 * 1024 // 10 MB to accommodate MediaPipe WASM files
+      },
       manifest: {
         name: 'Jump Rope Counter',
         short_name: 'JumpCounter',

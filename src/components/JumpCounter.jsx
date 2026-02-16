@@ -30,9 +30,16 @@ const JumpCounter = () => {
     const [showControls, setShowControls] = useState(false);
     const controlsTimeoutRef = useRef(null);
 
+    // UI Controls State
+    const [showSkeleton, setShowSkeleton] = useState(true);
+    const [showControlsPanel, setShowControlsPanel] = useState(true);
+    const [isPaused, setIsPaused] = useState(false);
+    const controlsPanelRef = useRef(null);
+
     // Refs for logic to avoid closure staleness in callbacks
     const detectorRef = useRef(new JumpDetector());
     const gameStateRef = useRef('IDLE');
+    const isPausedRef = useRef(false);
     const cameraRef = useRef(null);
     const poseRef = useRef(null);
     const timerRef = useRef(null);
@@ -42,11 +49,15 @@ const JumpCounter = () => {
         gameStateRef.current = gameState;
     }, [gameState]);
 
+    useEffect(() => {
+        isPausedRef.current = isPaused;
+    }, [isPaused]);
+
     // Timer Logic
     useEffect(() => {
         const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
-        if (gameState === 'ACTIVE') {
+        if (gameState === 'ACTIVE' && !isPaused) {
             timerRef.current = setInterval(() => {
                 setRemainingTime(prev => {
                     const newValue = prev - 1;
@@ -82,7 +93,7 @@ const JumpCounter = () => {
         return () => {
             if (timerRef.current) clearInterval(timerRef.current);
         };
-    }, [gameState]);
+    }, [gameState, isPaused]);
 
     // Handle User Interaction for Immersive Controls
     const handleInteraction = () => {
@@ -110,8 +121,8 @@ const JumpCounter = () => {
         drawLandmarks(ctx, results.poseLandmarks,
             { color: '#FF0000', lineWidth: 2 });
 
-        // Only run detection logic if game is ACTIVE
-        if (gameStateRef.current === 'ACTIVE') {
+        // Only run detection logic if game is ACTIVE and not paused
+        if (gameStateRef.current === 'ACTIVE' && !isPausedRef.current) {
             const { count: newCount, state } = detectorRef.current.update(results.poseLandmarks);
             setCount(prev => {
                 if (prev !== newCount) {
@@ -130,7 +141,7 @@ const JumpCounter = () => {
         setIsLoading(false);
         if (webcamRef.current && webcamRef.current.video && !cameraRef.current) {
             const videoElement = webcamRef.current.video;
-            const pose = new Pose({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
+            const pose = new Pose({ locateFile: (file) => `/mediapipe/pose/${file}` });
 
             pose.setOptions({
                 modelComplexity: 1,
@@ -198,6 +209,7 @@ const JumpCounter = () => {
                 clearInterval(timer);
                 detectorRef.current.reset();
                 setCount(0);
+                setIsPaused(false);
                 setGameState('ACTIVE');
             }
         }, 1000);
@@ -218,13 +230,25 @@ const JumpCounter = () => {
     const stopSession = () => {
         setGameState('IDLE');
         setIsJumping(false);
+        setIsPaused(false);
         if (timerRef.current) clearInterval(timerRef.current);
+    };
+
+    const togglePause = () => {
+        setIsPaused(!isPaused);
     };
 
     const finishSession = () => {
         setGameState('FINISHED');
         setIsJumping(false);
         speak('时间到，运动结束');
+    };
+
+    const handleOverlayClick = (e) => {
+        // Close controls panel when clicking outside of it
+        if (controlsPanelRef.current && !controlsPanelRef.current.contains(e.target)) {
+            setShowControlsPanel(false);
+        }
     };
 
     const handleDurationSelect = (minutes) => {
@@ -253,7 +277,7 @@ const JumpCounter = () => {
                 ref={videoWrapperRef}
                 onMouseMove={handleInteraction}
                 onTouchStart={handleInteraction}
-                onClick={handleInteraction}
+                onClick={gameState === 'ACTIVE' ? handleInteraction : handleOverlayClick}
             >
                 {isLoading && <div className="loading-overlay">正在加载 AI 模型...</div>}
 
@@ -271,16 +295,19 @@ const JumpCounter = () => {
                             <div className="overlay-label">时间</div>
                         </div>
 
-                        {/* Immersive Stop Button */}
+                        {/* Immersive Controls */}
                         <div className={`immersive-controls ${showControls ? 'visible' : ''}`}>
+                            <button className="control-btn pause-btn" onClick={togglePause}>
+                                {isPaused ? '▶️ 继续' : '⏸️ 暂停'}
+                            </button>
                             <button className="control-btn stop-btn" onClick={stopSession}>
                                 停止并重置
                             </button>
                         </div>
 
                         {/* Fullscreen Status Indicator */}
-                        <div className={`overlay-status ${isJumping ? 'jumping' : ''}`}>
-                            {isJumping ? '跳！' : '运动中'}
+                        <div className={`overlay-status ${isJumping ? 'jumping' : isPaused ? 'paused' : ''}`}>
+                            {isPaused ? '已暂停' : (isJumping ? '跳！' : '运动中')}
                         </div>
                     </>
                 )}
@@ -317,12 +344,43 @@ const JumpCounter = () => {
                     className="pose-overlay"
                     width={640}
                     height={480}
+                    style={{ display: showSkeleton ? 'block' : 'none' }}
                 />
+
+                {/* Toggle Buttons - Bottom Right */}
+                {gameState !== 'ACTIVE' && gameState !== 'COUNTDOWN' && (
+                    <div className="video-control-buttons">
+                        <button 
+                            className="icon-control-btn"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setShowSkeleton(!showSkeleton);
+                            }}
+                            title={showSkeleton ? '隐藏骨架' : '显示骨架'}
+                        >
+                            {showSkeleton ? '🦴' : '👁️'}
+                        </button>
+                        <button 
+                            className="icon-control-btn"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setShowControlsPanel(!showControlsPanel);
+                            }}
+                            title={showControlsPanel ? '隐藏控制面板' : '显示控制面板'}
+                        >
+                            {showControlsPanel ? '✕' : '☰'}
+                        </button>
+                    </div>
+                )}
             </div>
 
-            {/* Hide main controls panel when ACTIVE */}
-            {gameState !== 'ACTIVE' && (
-                <div className="controls-panel">
+            {/* Main controls panel overlayed */}
+            {gameState !== 'ACTIVE' && showControlsPanel && (
+                <div 
+                    ref={controlsPanelRef}
+                    className={`controls-panel ${showControlsPanel ? 'visible' : ''}`}
+                    onClick={(e) => e.stopPropagation()}
+                >
                     <div className="stats-group">
                         <div className="count-display">
                             <span className="label">跳绳次数</span>
