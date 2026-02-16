@@ -60,6 +60,7 @@
     width: 100%;
     height: 100%;
     transform: scaleX(-1);
+    object-fit: contain;
 }
 
 .loading-overlay,
@@ -188,22 +189,6 @@
     50% {
         opacity: 0.5;
         transform: scale(1.2);
-    }
-}
-
-/* Converting Spinner */
-.converting-spinner {
-    width: 60px;
-    height: 60px;
-    border: 5px solid rgba(255, 255, 255, 0.2);
-    border-top-color: #facc15;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-    to {
-        transform: rotate(360deg);
     }
 }
 
@@ -465,6 +450,64 @@
     cursor: pointer;
 }
 
+/* Recording Toggle */
+.recording-toggle {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    margin: 8px 0;
+}
+
+.toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    position: relative;
+}
+
+.toggle-checkbox {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: relative;
+    width: 48px;
+    height: 24px;
+    background: #374151;
+    border-radius: 12px;
+    transition: background 0.3s;
+}
+
+.toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    background: white;
+    border-radius: 50%;
+    top: 3px;
+    left: 3px;
+    transition: transform 0.3s;
+}
+
+.toggle-checkbox:checked + .toggle-slider {
+    background: #ef4444;
+}
+
+.toggle-checkbox:checked + .toggle-slider::before {
+    transform: translateX(24px);
+}
+
+.toggle-text {
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 0.95rem;
+    font-weight: 500;
+}
+
 .control-btn {
     border: none;
     padding: 10px 32px;
@@ -551,6 +594,18 @@
     .video-wrapper {
         width: 100vw;
         height: 100vh;
+    }
+
+    .webcam-feed {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .pose-overlay {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
     }
 
     .controls-panel {

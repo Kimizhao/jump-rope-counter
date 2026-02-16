@@ -3,8 +3,6 @@ import Webcam from 'react-webcam';
 import { Pose, POSE_CONNECTIONS } from '@mediapipe/pose';
 import { Camera } from '@mediapipe/camera_utils';
 import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { JumpDetector } from '../utils/poseUtils';
 import { speak, initSpeech } from '../utils/speech';
 import { playJumpSound, initAudio, playCountdownBeep, playStartBeep, playFinishBeep } from '../utils/sound';
@@ -39,13 +37,11 @@ const JumpCounter = () => {
     const controlsPanelRef = useRef(null);
 
     // Recording State
+    const [enableRecording, setEnableRecording] = useState(false);
     const [isRecording, setIsRecording] = useState(false);
-    const [isConverting, setIsConverting] = useState(false);
     const mediaRecorderRef = useRef(null);
     const recordedChunksRef = useRef([]);
     const audioStreamRef = useRef(null);
-    const ffmpegRef = useRef(new FFmpeg());
-    const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
 
     // Refs for logic to avoid closure staleness in callbacks
     const detectorRef = useRef(new JumpDetector());
@@ -63,25 +59,6 @@ const JumpCounter = () => {
     useEffect(() => {
         isPausedRef.current = isPaused;
     }, [isPaused]);
-
-    // Initialize FFmpeg
-    useEffect(() => {
-        const loadFFmpeg = async () => {
-            try {
-                const ffmpeg = ffmpegRef.current;
-                const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
-                await ffmpeg.load({
-                    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-                    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-                });
-                setFfmpegLoaded(true);
-                console.log('FFmpeg loaded successfully');
-            } catch (error) {
-                console.error('Failed to load FFmpeg:', error);
-            }
-        };
-        loadFFmpeg();
-    }, []);
 
     // Timer Logic
     useEffect(() => {
@@ -246,8 +223,10 @@ const JumpCounter = () => {
                 setCount(0);
                 setIsPaused(false);
                 setGameState('ACTIVE');
-                // 启动录制
-                startRecording();
+                // 如果启用录制，则启动录制
+                if (enableRecording) {
+                    startRecording();
+                }
             }
         }, 1000);
     };
@@ -307,7 +286,7 @@ const JumpCounter = () => {
                 }
             };
 
-            mediaRecorder.onstop = async () => {
+            mediaRecorder.onstop = () => {
                 const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
 
                 // 停止音频轨道
@@ -321,68 +300,16 @@ const JumpCounter = () => {
                 // 生成文件名，包含日期和跳绳次数
                 const now = new Date();
                 const dateStr = now.toISOString().slice(0, 19).replace(/:/g, '-');
-                const baseFilename = `跳绳录像_${count}次_${dateStr}`;
+                const filename = `跳绳录像_${count}次_${dateStr}.webm`;
 
-                // 如果 FFmpeg 已加载，转换为 MP4
-                if (ffmpegLoaded) {
-                    try {
-                        setIsConverting(true);
-                        const ffmpeg = ffmpegRef.current;
-
-                        // 写入输入文件
-                        await ffmpeg.writeFile('input.webm', await fetchFile(blob));
-
-                        // 转换为 MP4（重新编码为 H.264 和 AAC）
-                        await ffmpeg.exec([
-                            '-i', 'input.webm',
-                            '-c:v', 'libx264',
-                            '-preset', 'fast',
-                            '-crf', '22',
-                            '-c:a', 'aac',
-                            '-b:a', '128k',
-                            'output.mp4'
-                        ]);
-
-                        // 读取输出文件
-                        const data = await ffmpeg.readFile('output.mp4');
-                        const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
-                        const url = URL.createObjectURL(mp4Blob);
-
-                        // 下载 MP4 视频
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `${baseFilename}.mp4`;
-                        a.click();
-                        URL.revokeObjectURL(url);
-
-                        // 清理 FFmpeg 文件系统
-                        await ffmpeg.deleteFile('input.webm');
-                        await ffmpeg.deleteFile('output.mp4');
-
-                        setIsConverting(false);
-                        console.log('Video converted to MP4 successfully');
-                    } catch (error) {
-                        console.error('Failed to convert to MP4:', error);
-                        setIsConverting(false);
-                        
-                        // 如果转换失败，下载原始 WebM 文件
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `${baseFilename}.webm`;
-                        a.click();
-                        URL.revokeObjectURL(url);
-                    }
-                } else {
-                    // FFmpeg 未加载，下载 WebM 文件
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `${baseFilename}.webm`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                    console.warn('FFmpeg not loaded, saving as WebM');
-                }
+                // 下载 WebM 视频
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                a.click();
+                URL.revokeObjectURL(url);
+                console.log('Video saved as WebM');
             };
 
             mediaRecorder.start();
@@ -522,14 +449,6 @@ const JumpCounter = () => {
                     </div>
                 )}
 
-                {/* Converting Overlay */}
-                {isConverting && (
-                    <div className="countdown-overlay">
-                        <div className="converting-spinner"></div>
-                        <div className="countdown-text" style={{ marginTop: 20 }}>正在转换为 MP4...</div>
-                    </div>
-                )}
-
                 <Webcam
                     ref={webcamRef}
                     className="webcam-feed"
@@ -630,6 +549,19 @@ const JumpCounter = () => {
                                     <button className="confirm-btn" onClick={handleCustomDuration}>确定</button>
                                 </div>
                             )}
+
+                            <div className="recording-toggle">
+                                <label className="toggle-label">
+                                    <input
+                                        type="checkbox"
+                                        checked={enableRecording}
+                                        onChange={(e) => setEnableRecording(e.target.checked)}
+                                        className="toggle-checkbox"
+                                    />
+                                    <span className="toggle-slider"></span>
+                                    <span className="toggle-text">录制视频</span>
+                                </label>
+                            </div>
 
                             <button className="control-btn start-btn" onClick={startSession}>
                                 开始运动
