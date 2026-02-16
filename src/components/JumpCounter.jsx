@@ -3,6 +3,8 @@ import Webcam from 'react-webcam';
 import { Pose, POSE_CONNECTIONS } from '@mediapipe/pose';
 import { Camera } from '@mediapipe/camera_utils';
 import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { JumpDetector } from '../utils/poseUtils';
 import { speak, initSpeech } from '../utils/speech';
 import { playJumpSound, initAudio, playCountdownBeep, playStartBeep, playFinishBeep } from '../utils/sound';
@@ -36,6 +38,15 @@ const JumpCounter = () => {
     const [isPaused, setIsPaused] = useState(false);
     const controlsPanelRef = useRef(null);
 
+    // Recording State
+    const [isRecording, setIsRecording] = useState(false);
+    const [isConverting, setIsConverting] = useState(false);
+    const mediaRecorderRef = useRef(null);
+    const recordedChunksRef = useRef([]);
+    const audioStreamRef = useRef(null);
+    const ffmpegRef = useRef(new FFmpeg());
+    const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
+
     // Refs for logic to avoid closure staleness in callbacks
     const detectorRef = useRef(new JumpDetector());
     const gameStateRef = useRef('IDLE');
@@ -52,6 +63,25 @@ const JumpCounter = () => {
     useEffect(() => {
         isPausedRef.current = isPaused;
     }, [isPaused]);
+
+    // Initialize FFmpeg
+    useEffect(() => {
+        const loadFFmpeg = async () => {
+            try {
+                const ffmpeg = ffmpegRef.current;
+                const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+                await ffmpeg.load({
+                    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+                    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+                });
+                setFfmpegLoaded(true);
+                console.log('FFmpeg loaded successfully');
+            } catch (error) {
+                console.error('Failed to load FFmpeg:', error);
+            }
+        };
+        loadFFmpeg();
+    }, []);
 
     // Timer Logic
     useEffect(() => {
@@ -164,6 +194,11 @@ const JumpCounter = () => {
             });
             camera.start();
             cameraRef.current = camera;
+
+            // 自动进入全屏
+            setTimeout(() => {
+                enterFullscreen(videoWrapperRef.current);
+            }, 500);
         }
     };
 
@@ -211,6 +246,8 @@ const JumpCounter = () => {
                 setCount(0);
                 setIsPaused(false);
                 setGameState('ACTIVE');
+                // 启动录制
+                startRecording();
             }
         }, 1000);
     };
@@ -227,11 +264,155 @@ const JumpCounter = () => {
         }
     };
 
+    const startRecording = async () => {
+        try {
+            const videoElement = webcamRef.current?.video;
+            if (!videoElement || !videoElement.srcObject) {
+                console.error('Video stream not available');
+                return;
+            }
+
+            recordedChunksRef.current = [];
+            const videoStream = videoElement.srcObject;
+
+            // 获取麦克风音频流
+            let combinedStream;
+            try {
+                const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                audioStreamRef.current = audioStream;
+
+                // 合并视频轨道和音频轨道
+                combinedStream = new MediaStream([
+                    ...videoStream.getVideoTracks(),
+                    ...audioStream.getAudioTracks()
+                ]);
+                console.log('Recording with audio and video');
+            } catch (audioError) {
+                console.warn('Could not access microphone, recording video only:', audioError);
+                // 如果无法获取音频，只录制视频
+                combinedStream = videoStream;
+            }
+
+            // 创建 MediaRecorder
+            const options = { mimeType: 'video/webm;codecs=vp9,opus' };
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options.mimeType = 'video/webm';
+            }
+
+            const mediaRecorder = new MediaRecorder(combinedStream, options);
+
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data && event.data.size > 0) {
+                    recordedChunksRef.current.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = async () => {
+                const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+
+                // 停止音频轨道
+                if (audioStreamRef.current) {
+                    audioStreamRef.current.getTracks().forEach(track => track.stop());
+                    audioStreamRef.current = null;
+                }
+
+                setIsRecording(false);
+
+                // 生成文件名，包含日期和跳绳次数
+                const now = new Date();
+                const dateStr = now.toISOString().slice(0, 19).replace(/:/g, '-');
+                const baseFilename = `跳绳录像_${count}次_${dateStr}`;
+
+                // 如果 FFmpeg 已加载，转换为 MP4
+                if (ffmpegLoaded) {
+                    try {
+                        setIsConverting(true);
+                        const ffmpeg = ffmpegRef.current;
+
+                        // 写入输入文件
+                        await ffmpeg.writeFile('input.webm', await fetchFile(blob));
+
+                        // 转换为 MP4（重新编码为 H.264 和 AAC）
+                        await ffmpeg.exec([
+                            '-i', 'input.webm',
+                            '-c:v', 'libx264',
+                            '-preset', 'fast',
+                            '-crf', '22',
+                            '-c:a', 'aac',
+                            '-b:a', '128k',
+                            'output.mp4'
+                        ]);
+
+                        // 读取输出文件
+                        const data = await ffmpeg.readFile('output.mp4');
+                        const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+                        const url = URL.createObjectURL(mp4Blob);
+
+                        // 下载 MP4 视频
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `${baseFilename}.mp4`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+
+                        // 清理 FFmpeg 文件系统
+                        await ffmpeg.deleteFile('input.webm');
+                        await ffmpeg.deleteFile('output.mp4');
+
+                        setIsConverting(false);
+                        console.log('Video converted to MP4 successfully');
+                    } catch (error) {
+                        console.error('Failed to convert to MP4:', error);
+                        setIsConverting(false);
+                        
+                        // 如果转换失败，下载原始 WebM 文件
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `${baseFilename}.webm`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                    }
+                } else {
+                    // FFmpeg 未加载，下载 WebM 文件
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${baseFilename}.webm`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    console.warn('FFmpeg not loaded, saving as WebM');
+                }
+            };
+
+            mediaRecorder.start();
+            mediaRecorderRef.current = mediaRecorder;
+            setIsRecording(true);
+            console.log('Recording started');
+        } catch (error) {
+            console.error('Failed to start recording:', error);
+        }
+    };
+
+    const stopRecording = () => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            mediaRecorderRef.current.stop();
+            console.log('Recording stopped');
+        }
+        // 确保音频流被停止
+        if (audioStreamRef.current) {
+            audioStreamRef.current.getTracks().forEach(track => track.stop());
+            audioStreamRef.current = null;
+        }
+    };
+
     const stopSession = () => {
         setGameState('IDLE');
         setIsJumping(false);
         setIsPaused(false);
         if (timerRef.current) clearInterval(timerRef.current);
+        // 停止录制
+        stopRecording();
     };
 
     const togglePause = () => {
@@ -242,6 +423,8 @@ const JumpCounter = () => {
         setGameState('FINISHED');
         setIsJumping(false);
         speak('时间到，运动结束');
+        // 停止录制
+        stopRecording();
     };
 
     const handleOverlayClick = (e) => {
@@ -309,6 +492,14 @@ const JumpCounter = () => {
                         <div className={`overlay-status ${isJumping ? 'jumping' : isPaused ? 'paused' : ''}`}>
                             {isPaused ? '已暂停' : (isJumping ? '跳！' : '运动中')}
                         </div>
+
+                        {/* Recording Indicator */}
+                        {isRecording && (
+                            <div className="recording-indicator">
+                                <span className="recording-dot"></span>
+                                <span className="recording-text">录制中</span>
+                            </div>
+                        )}
                     </>
                 )}
 
@@ -328,6 +519,14 @@ const JumpCounter = () => {
                         <button className="control-btn start-btn" onClick={() => setGameState('IDLE')} style={{ marginTop: 20 }}>
                             返回
                         </button>
+                    </div>
+                )}
+
+                {/* Converting Overlay */}
+                {isConverting && (
+                    <div className="countdown-overlay">
+                        <div className="converting-spinner"></div>
+                        <div className="countdown-text" style={{ marginTop: 20 }}>正在转换为 MP4...</div>
                     </div>
                 )}
 
