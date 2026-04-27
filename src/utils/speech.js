@@ -1,8 +1,10 @@
 export const speak = (text, lang = 'zh-CN') => {
     if (!window.speechSynthesis) return;
 
-    // Cancel any ongoing speech
-    window.speechSynthesis.cancel();
+    // Cancel any ongoing speech only if it's actually speaking or pending
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+        window.speechSynthesis.cancel();
+    }
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = lang;

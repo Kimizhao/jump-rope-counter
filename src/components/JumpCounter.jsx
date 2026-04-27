@@ -1,8 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import Webcam from 'react-webcam';
-import { Pose, POSE_CONNECTIONS } from '@mediapipe/pose';
-import { Camera } from '@mediapipe/camera_utils';
-import { drawConnectors, drawLandmarks } from '@mediapipe/drawing_utils';
+import { PoseLandmarker, FilesetResolver, DrawingUtils } from '@mediapipe/tasks-vision';
 import { JumpDetector } from '../utils/poseUtils';
 import { speak, initSpeech } from '../utils/speech';
 import { playJumpSound, initAudio, playCountdownBeep, playStartBeep, playFinishBeep } from '../utils/sound';
@@ -43,15 +41,27 @@ const JumpCounter = () => {
     const recordedChunksRef = useRef([]);
     const audioStreamRef = useRef(null);
 
+    // Game Mode: 'single' | 'battle'
+    const [gameMode, setGameMode] = useState('single');
+    const gameModeRef = useRef('single');
+
+    // Player 2 State (battle mode only)
+    const [count2, setCount2] = useState(0);
+    const [isJumping2, setIsJumping2] = useState(false);
+
     // Refs for logic to avoid closure staleness in callbacks
     const detectorRef = useRef(new JumpDetector());
+    const detector2Ref = useRef(new JumpDetector());
     const gameStateRef = useRef('IDLE');
     const isPausedRef = useRef(false);
-    const cameraRef = useRef(null);
-    const poseRef = useRef(null);
+    const poseLandmarkerRef = useRef(null);
+    const drawingUtilsRef = useRef(null);
+    const lastVideoTimeRef = useRef(-1);
+    const animFrameRef = useRef(null);
+    const playerAssignmentRef = useRef({ p1X: null, p2X: null });
     const timerRef = useRef(null);
 
-    // Sync ref with state
+    // Sync refs with state
     useEffect(() => {
         gameStateRef.current = gameState;
     }, [gameState]);
@@ -59,6 +69,18 @@ const JumpCounter = () => {
     useEffect(() => {
         isPausedRef.current = isPaused;
     }, [isPaused]);
+
+    useEffect(() => {
+        gameModeRef.current = gameMode;
+    }, [gameMode]);
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+            if (poseLandmarkerRef.current) poseLandmarkerRef.current.close();
+        };
+    }, []);
 
     // Timer Logic
     useEffect(() => {
@@ -94,13 +116,228 @@ const JumpCounter = () => {
 
             // Exit fullscreen if finished or idle (and currently in fullscreen)
             if (document.fullscreenElement && (gameState === 'FINISHED' || gameState === 'IDLE')) {
-                document.exitFullscreen().catch(err => console.log(err));
+                document.exitFullscreen().catch(err => console.error(err));
             }
         }
         return () => {
             if (timerRef.current) clearInterval(timerRef.current);
         };
     }, [gameState, isPaused]);
+
+    // Assign two detected poses to P1 (left) and P2 (right) stably across frames
+    const assignPosesToPlayers = useCallback((lm0, lm1) => {
+        const cx = (lm) => (lm[11].x + lm[12].x + lm[23].x + lm[24].x) / 4;
+        const x0 = cx(lm0);
+        const x1 = cx(lm1);
+        const { p1X, p2X } = playerAssignmentRef.current;
+
+        if (p1X === null) {
+            // First frame: assign by raw x position
+            // Since webcam is mirrored, larger x is on the left side of the screen
+            if (x0 >= x1) {
+                playerAssignmentRef.current = { p1X: x0, p2X: x1 };
+                return [lm0, lm1];
+            } else {
+                playerAssignmentRef.current = { p1X: x1, p2X: x0 };
+                return [lm1, lm0];
+            }
+        }
+
+        // Subsequent frames: nearest-neighbor cost to avoid swapping
+        const costKeep = Math.abs(x0 - p1X) + Math.abs(x1 - p2X);
+        const costSwap = Math.abs(x0 - p2X) + Math.abs(x1 - p1X);
+        if (costKeep <= costSwap) {
+            playerAssignmentRef.current = { p1X: x0, p2X: x1 };
+            return [lm0, lm1];
+        } else {
+            playerAssignmentRef.current = { p1X: x1, p2X: x0 };
+            return [lm1, lm0];
+        }
+    }, []);
+
+    const processResults = useCallback((results) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const ctx = canvas.getContext('2d');
+        ctx.save();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Draw skeleton(s) for all detected poses
+        if (results.landmarks && results.landmarks.length > 0) {
+            if (!drawingUtilsRef.current) {
+                drawingUtilsRef.current = new DrawingUtils(ctx);
+            }
+            for (const landmarks of results.landmarks) {
+                drawingUtilsRef.current.drawConnectors(
+                    landmarks, PoseLandmarker.POSE_CONNECTIONS,
+                    { color: '#00FF00', lineWidth: 4 }
+                );
+                drawingUtilsRef.current.drawLandmarks(
+                    landmarks, { color: '#FF0000', radius: 3 }
+                );
+            }
+        }
+
+        // Only run detection logic if game is ACTIVE and not paused
+        if (gameStateRef.current === 'ACTIVE' && !isPausedRef.current) {
+        const poses = results.landmarks ?? [];
+        let p1Pose = null;
+        let p2Pose = null;
+
+        if (gameModeRef.current === 'battle' && poses.length > 0) {
+            if (poses.length >= 2) {
+                const [p1lm, p2lm] = assignPosesToPlayers(poses[0], poses[1]);
+                p1Pose = p1lm;
+                p2Pose = p2lm;
+            } else if (poses.length === 1) {
+                // Only one person visible — determine if it's P1 or P2
+                const cx = (lm) => (lm[11].x + lm[12].x + lm[23].x + lm[24].x) / 4;
+                const x = cx(poses[0]);
+                const { p1X, p2X } = playerAssignmentRef.current;
+                
+                let isP1 = true;
+                if (p1X !== null && p2X !== null) {
+                    isP1 = Math.abs(x - p1X) <= Math.abs(x - p2X);
+                } else {
+                    isP1 = x >= 0.5; // Default to P1 if on the left side of the screen (larger x)
+                }
+
+                if (isP1) {
+                    if (p1X !== null) playerAssignmentRef.current.p1X = x;
+                    p1Pose = poses[0];
+                } else {
+                    if (p2X !== null) playerAssignmentRef.current.p2X = x;
+                    p2Pose = poses[0];
+                }
+            }
+        }
+
+        // Draw skeleton(s) and labels for all detected poses
+        if (poses.length > 0) {
+            if (!drawingUtilsRef.current) {
+                drawingUtilsRef.current = new DrawingUtils(ctx);
+            }
+            for (const landmarks of poses) {
+                drawingUtilsRef.current.drawConnectors(
+                    landmarks, PoseLandmarker.POSE_CONNECTIONS,
+                    { color: '#00FF00', lineWidth: 4 }
+                );
+                drawingUtilsRef.current.drawLandmarks(
+                    landmarks, { color: '#FF0000', radius: 3 }
+                );
+            }
+
+            // Draw P1 / P2 labels in battle mode
+            if (gameModeRef.current === 'battle') {
+                const drawLabel = (pose, text, color) => {
+                    if (!pose) return;
+                    const nose = pose[0];
+                    if (!nose) return;
+                    
+                    const x = nose.x * canvas.width;
+                    const y = nose.y * canvas.height - 40; // slightly above head
+                    
+                    ctx.save();
+                    ctx.translate(x, y);
+                    ctx.scale(-1, 1); // Un-mirror the text so it renders correctly on the mirrored canvas
+                    
+                    ctx.font = 'bold 28px sans-serif';
+                    ctx.textAlign = 'center';
+                    
+                    // Draw text outline
+                    ctx.strokeStyle = '#000000';
+                    ctx.lineWidth = 4;
+                    ctx.strokeText(text, 0, 0);
+                    
+                    // Draw text fill
+                    ctx.fillStyle = color;
+                    ctx.fillText(text, 0, 0);
+                    
+                    ctx.restore();
+                };
+
+                drawLabel(p1Pose, 'P1', '#3b82f6'); // Blue
+                drawLabel(p2Pose, 'P2', '#ef4444'); // Red
+            }
+        }
+
+        // Only run detection logic if game is ACTIVE and not paused
+        if (gameStateRef.current === 'ACTIVE' && !isPausedRef.current) {
+            if (gameModeRef.current === 'battle') {
+                if (p1Pose) {
+                    const { count: c1, state: s1 } = detectorRef.current.update(p1Pose);
+                    setCount(prev => { if (prev !== c1) { playJumpSound(); return c1; } return prev; });
+                    setIsJumping(s1 === 'AIRBORNE' || s1 === 'JUMP_START');
+                } else {
+                    setIsJumping(false);
+                }
+
+                if (p2Pose) {
+                    const { count: c2, state: s2 } = detector2Ref.current.update(p2Pose);
+                    setCount2(prev => { if (prev !== c2) { playJumpSound(); return c2; } return prev; });
+                    setIsJumping2(s2 === 'AIRBORNE' || s2 === 'JUMP_START');
+                } else {
+                    setIsJumping2(false);
+                }
+            } else {
+                if (poses.length > 0) {
+                    const { count: newCount, state } = detectorRef.current.update(poses[0]);
+                    setCount(prev => {
+                        if (prev !== newCount) {
+                            playJumpSound();
+                            return newCount;
+                        }
+                        return prev;
+                    });
+                    setIsJumping(state === 'AIRBORNE' || state === 'JUMP_START');
+                }
+            }
+        }
+        }
+
+        ctx.restore();
+    }, [assignPosesToPlayers]);
+
+    const onCamLoaded = async () => {
+        setIsLoading(false);
+        const videoElement = webcamRef.current?.video;
+        if (!videoElement || poseLandmarkerRef.current) return;
+
+        const vision = await FilesetResolver.forVisionTasks(
+            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+        );
+        const landmarker = await PoseLandmarker.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: '/mediapipe/tasks/pose_landmarker_lite.task',
+                delegate: 'GPU'
+            },
+            runningMode: 'VIDEO',
+            numPoses: 2,
+            minPoseDetectionConfidence: 0.5,
+            minPosePresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+            outputSegmentationMasks: false
+        });
+        poseLandmarkerRef.current = landmarker;
+
+        const runDetection = (timestamp) => {
+            const video = webcamRef.current?.video;
+            const lm = poseLandmarkerRef.current;
+            if (video && lm && video.readyState >= 2 && video.currentTime !== lastVideoTimeRef.current) {
+                lastVideoTimeRef.current = video.currentTime;
+                const results = lm.detectForVideo(video, timestamp);
+                processResults(results);
+            }
+            animFrameRef.current = requestAnimationFrame(runDetection);
+        };
+        animFrameRef.current = requestAnimationFrame(runDetection);
+
+        // 自动进入全屏
+        setTimeout(() => {
+            enterFullscreen(videoWrapperRef.current);
+        }, 500);
+    };
 
     // Handle User Interaction for Immersive Controls
     const handleInteraction = () => {
@@ -110,72 +347,6 @@ const JumpCounter = () => {
             controlsTimeoutRef.current = setTimeout(() => {
                 setShowControls(false);
             }, 3000);
-        }
-    };
-
-    const onResults = useCallback((results) => {
-        const canvas = canvasRef.current;
-        if (!canvas || !results.poseLandmarks) return;
-
-        const ctx = canvas.getContext('2d');
-        const { width, height } = canvas;
-
-        ctx.save();
-        ctx.clearRect(0, 0, width, height);
-
-        drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS,
-            { color: '#00FF00', lineWidth: 4 });
-        drawLandmarks(ctx, results.poseLandmarks,
-            { color: '#FF0000', lineWidth: 2 });
-
-        // Only run detection logic if game is ACTIVE and not paused
-        if (gameStateRef.current === 'ACTIVE' && !isPausedRef.current) {
-            const { count: newCount, state } = detectorRef.current.update(results.poseLandmarks);
-            setCount(prev => {
-                if (prev !== newCount) {
-                    playJumpSound(); // Play sound on count change
-                    return newCount;
-                }
-                return prev;
-            });
-            setIsJumping(state === 'AIRBORNE' || state === 'JUMP_START');
-        }
-
-        ctx.restore();
-    }, []);
-
-    const onCamLoaded = (stream) => {
-        setIsLoading(false);
-        if (webcamRef.current && webcamRef.current.video && !cameraRef.current) {
-            const videoElement = webcamRef.current.video;
-            const pose = new Pose({ locateFile: (file) => `/mediapipe/pose/${file}` });
-
-            pose.setOptions({
-                modelComplexity: 1,
-                smoothLandmarks: true,
-                enableSegmentation: false,
-                smoothSegmentation: false,
-                minDetectionConfidence: 0.5,
-                minTrackingConfidence: 0.5
-            });
-
-            pose.onResults(onResults);
-            poseRef.current = pose;
-
-            const camera = new Camera(videoElement, {
-                onFrame: async () => {
-                    await pose.send({ image: videoElement });
-                },
-                width: 640,
-                height: 480
-            });
-            camera.start();
-            cameraRef.current = camera;
-
-            // 自动进入全屏
-            setTimeout(() => {
-                enterFullscreen(videoWrapperRef.current);
-            }, 500);
         }
     };
 
@@ -222,6 +393,15 @@ const JumpCounter = () => {
                 detectorRef.current.reset();
                 setCount(0);
                 setIsPaused(false);
+
+                // Reset P2 in battle mode
+                if (gameModeRef.current === 'battle') {
+                    detector2Ref.current.reset();
+                    setCount2(0);
+                    setIsJumping2(false);
+                    playerAssignmentRef.current = { p1X: null, p2X: null };
+                }
+
                 setGameState('ACTIVE');
                 // 如果启用录制，则启动录制
                 if (enableRecording) {
@@ -235,7 +415,7 @@ const JumpCounter = () => {
         if (!element) return;
 
         if (element.requestFullscreen) {
-            element.requestFullscreen().catch(err => console.log(err));
+            element.requestFullscreen().catch(err => console.error(err));
         } else if (element.webkitRequestFullscreen) { /* Safari */
             element.webkitRequestFullscreen();
         } else if (element.msRequestFullscreen) { /* IE11 */
@@ -247,7 +427,6 @@ const JumpCounter = () => {
         try {
             const videoElement = webcamRef.current?.video;
             if (!videoElement || !videoElement.srcObject) {
-                console.error('Video stream not available');
                 return;
             }
 
@@ -265,9 +444,7 @@ const JumpCounter = () => {
                     ...videoStream.getVideoTracks(),
                     ...audioStream.getAudioTracks()
                 ]);
-                console.log('Recording with audio and video');
             } catch (audioError) {
-                console.warn('Could not access microphone, recording video only:', audioError);
                 // 如果无法获取音频，只录制视频
                 combinedStream = videoStream;
             }
@@ -300,7 +477,10 @@ const JumpCounter = () => {
                 // 生成文件名，包含日期和跳绳次数
                 const now = new Date();
                 const dateStr = now.toISOString().slice(0, 19).replace(/:/g, '-');
-                const filename = `跳绳录像_${count}次_${dateStr}.webm`;
+                const c1 = detectorRef.current.jumpCount;
+                const filename = gameModeRef.current === 'battle'
+                    ? `跳绳对战_P1_${c1}次_P2_${detector2Ref.current.jumpCount}次_${dateStr}.webm`
+                    : `跳绳录像_${c1}次_${dateStr}.webm`;
 
                 // 下载 WebM 视频
                 const url = URL.createObjectURL(blob);
@@ -309,22 +489,19 @@ const JumpCounter = () => {
                 a.download = filename;
                 a.click();
                 URL.revokeObjectURL(url);
-                console.log('Video saved as WebM');
             };
 
             mediaRecorder.start();
             mediaRecorderRef.current = mediaRecorder;
             setIsRecording(true);
-            console.log('Recording started');
         } catch (error) {
-            console.error('Failed to start recording:', error);
+            // Recording failed silently
         }
     };
 
     const stopRecording = () => {
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
             mediaRecorderRef.current.stop();
-            console.log('Recording stopped');
         }
         // 确保音频流被停止
         if (audioStreamRef.current) {
@@ -336,6 +513,7 @@ const JumpCounter = () => {
     const stopSession = () => {
         setGameState('IDLE');
         setIsJumping(false);
+        setIsJumping2(false);
         setIsPaused(false);
         if (timerRef.current) clearInterval(timerRef.current);
         // 停止录制
@@ -349,9 +527,19 @@ const JumpCounter = () => {
     const finishSession = () => {
         setGameState('FINISHED');
         setIsJumping(false);
-        speak('时间到，运动结束');
+        setIsJumping2(false);
         // 停止录制
         stopRecording();
+
+        const c1 = detectorRef.current.jumpCount;
+        const c2 = detector2Ref.current.jumpCount;
+        if (gameModeRef.current === 'battle') {
+            if (c1 > c2) speak('P1 获胜');
+            else if (c2 > c1) speak('P2 获胜');
+            else speak('平局');
+        } else {
+            speak('时间到，运动结束');
+        }
     };
 
     const handleOverlayClick = (e) => {
@@ -391,8 +579,8 @@ const JumpCounter = () => {
             >
                 {isLoading && <div className="loading-overlay">正在加载 AI 模型...</div>}
 
-                {/* Active Overlay Stats */}
-                {gameState === 'ACTIVE' && (
+                {/* Single mode: Active Overlay Stats */}
+                {gameState === 'ACTIVE' && gameMode === 'single' && (
                     <>
                         <div className="overlay-stat top-left">
                             <div className="overlay-value">{count}</div>
@@ -405,7 +593,48 @@ const JumpCounter = () => {
                             <div className="overlay-label">时间</div>
                         </div>
 
-                        {/* Immersive Controls */}
+                        {/* Fullscreen Status Indicator */}
+                        <div className={`overlay-status ${isJumping ? 'jumping' : isPaused ? 'paused' : ''}`}>
+                            {isPaused ? '已暂停' : (isJumping ? '跳！' : '运动中')}
+                        </div>
+                    </>
+                )}
+
+                {/* Battle mode: Active Overlay Stats */}
+                {gameState === 'ACTIVE' && gameMode === 'battle' && (
+                    <>
+                        {/* Shared timer centered at top */}
+                        <div className="overlay-stat top-center">
+                            <div className={`overlay-value ${remainingTime <= 5 ? 'warning' : ''}`}>
+                                {formatTime(remainingTime)}
+                            </div>
+                            <div className="overlay-label">时间</div>
+                        </div>
+
+                        {/* P1 left panel */}
+                        <div className="battle-player-stat left">
+                            <div className="player-label">P1</div>
+                            <div className={`overlay-value ${isJumping ? 'jumping-val' : ''}`}>{count}</div>
+                            <div className="overlay-label">次数</div>
+                        </div>
+
+                        {/* P2 right panel */}
+                        <div className="battle-player-stat right">
+                            <div className="player-label">P2</div>
+                            <div className={`overlay-value ${isJumping2 ? 'jumping-val' : ''}`}>{count2}</div>
+                            <div className="overlay-label">次数</div>
+                        </div>
+
+                        {/* Vertical center divider */}
+                        <div className="battle-divider" />
+
+                        {isPaused && <div className="overlay-status paused">已暂停</div>}
+                    </>
+                )}
+
+                {/* Immersive Controls (both modes) */}
+                {gameState === 'ACTIVE' && (
+                    <>
                         <div className={`immersive-controls ${showControls ? 'visible' : ''}`}>
                             <button className="control-btn pause-btn" onClick={togglePause}>
                                 {isPaused ? '▶️ 继续' : '⏸️ 暂停'}
@@ -413,11 +642,6 @@ const JumpCounter = () => {
                             <button className="control-btn stop-btn" onClick={stopSession}>
                                 停止并重置
                             </button>
-                        </div>
-
-                        {/* Fullscreen Status Indicator */}
-                        <div className={`overlay-status ${isJumping ? 'jumping' : isPaused ? 'paused' : ''}`}>
-                            {isPaused ? '已暂停' : (isJumping ? '跳！' : '运动中')}
                         </div>
 
                         {/* Recording Indicator */}
@@ -437,7 +661,8 @@ const JumpCounter = () => {
                     </div>
                 )}
 
-                {gameState === 'FINISHED' && (
+                {/* Single mode: Finished screen */}
+                {gameState === 'FINISHED' && gameMode === 'single' && (
                     <div className="countdown-overlay">
                         <div className="countdown-number" style={{ fontSize: '4rem', color: '#4ade80' }}>
                             {count} 次
@@ -446,6 +671,30 @@ const JumpCounter = () => {
                         <button className="control-btn start-btn" onClick={() => setGameState('IDLE')} style={{ marginTop: 20 }}>
                             返回
                         </button>
+                    </div>
+                )}
+
+                {/* Battle mode: Finished screen */}
+                {gameState === 'FINISHED' && gameMode === 'battle' && (
+                    <div className="countdown-overlay">
+                        <div className="battle-results">
+                            <div className="winner-display">
+                                {count > count2 ? 'P1 获胜! 🏆' : count2 > count ? 'P2 获胜! 🏆' : '平局!'}
+                            </div>
+                            <div className="player-results">
+                                <div className={`player-result ${count >= count2 ? 'winner' : ''}`}>
+                                    <span className="player-name">P1</span>
+                                    <span className="player-count">{count} 次</span>
+                                </div>
+                                <div className={`player-result ${count2 >= count ? 'winner' : ''}`}>
+                                    <span className="player-name">P2</span>
+                                    <span className="player-count">{count2} 次</span>
+                                </div>
+                            </div>
+                            <button className="control-btn start-btn" onClick={() => setGameState('IDLE')} style={{ marginTop: 20 }}>
+                                返回
+                            </button>
+                        </div>
                     </div>
                 )}
 
@@ -468,7 +717,7 @@ const JumpCounter = () => {
                 {/* Toggle Buttons - Bottom Right */}
                 {gameState !== 'ACTIVE' && gameState !== 'COUNTDOWN' && (
                     <div className="video-control-buttons">
-                        <button 
+                        <button
                             className="icon-control-btn"
                             onClick={(e) => {
                                 e.stopPropagation();
@@ -478,7 +727,7 @@ const JumpCounter = () => {
                         >
                             {showSkeleton ? '🦴' : '👁️'}
                         </button>
-                        <button 
+                        <button
                             className="icon-control-btn"
                             onClick={(e) => {
                                 e.stopPropagation();
@@ -494,7 +743,7 @@ const JumpCounter = () => {
 
             {/* Main controls panel overlayed */}
             {gameState !== 'ACTIVE' && showControlsPanel && (
-                <div 
+                <div
                     ref={controlsPanelRef}
                     className={`controls-panel ${showControlsPanel ? 'visible' : ''}`}
                     onClick={(e) => e.stopPropagation()}
@@ -502,7 +751,7 @@ const JumpCounter = () => {
                     <div className="stats-group">
                         <div className="count-display">
                             <span className="label">跳绳次数</span>
-                            <span className="value">{count}</span>
+                            <span className="value">{count}{gameMode === 'battle' ? ` / ${count2}` : ''}</span>
                         </div>
                         <div className="timer-display">
                             <span className="label">剩余时间</span>
@@ -519,6 +768,22 @@ const JumpCounter = () => {
 
                     {gameState === 'IDLE' ? (
                         <div className="setup-controls">
+                            {/* Mode Selector */}
+                            <div className="mode-selector">
+                                <button
+                                    className={`mode-btn ${gameMode === 'single' ? 'active' : ''}`}
+                                    onClick={() => setGameMode('single')}
+                                >
+                                    单人
+                                </button>
+                                <button
+                                    className={`mode-btn ${gameMode === 'battle' ? 'active' : ''}`}
+                                    onClick={() => setGameMode('battle')}
+                                >
+                                    双人对战
+                                </button>
+                            </div>
+
                             <div className="duration-selector">
                                 {[1, 2, 3, 5, 10].map(min => (
                                     <button

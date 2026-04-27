@@ -660,3 +660,127 @@
         right: 20px;
     }
 }
+
+/* ========================
+   Battle Mode — Active Overlays
+   ======================== */
+
+.overlay-stat.top-center {
+    position: absolute;
+    top: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    z-index: 20;
+    pointer-events: none;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+.battle-player-stat {
+    position: absolute;
+    top: 40px;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    pointer-events: none;
+    background: rgba(0, 0, 0, 0.35);
+    padding: 12px 20px;
+    border-radius: 14px;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+.battle-player-stat.left  { left: 20px; }
+.battle-player-stat.right { right: 20px; }
+
+.player-label {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.55);
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    margin-bottom: 4px;
+}
+
+.overlay-value.jumping-val {
+    color: #facc15;
+    transform: scale(1.1);
+    display: inline-block;
+}
+
+.battle-divider {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: rgba(255, 255, 255, 0.12);
+    z-index: 10;
+    pointer-events: none;
+}
+
+/* ========================
+   Battle Mode — Results Screen
+   ======================== */
+
+.battle-results {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+}
+
+.winner-display {
+    font-size: 3rem;
+    font-weight: 900;
+    color: #facc15;
+    text-shadow: 0 0 20px rgba(250, 204, 21, 0.5);
+}
+
+.player-results {
+    display: flex;
+    gap: 32px;
+}
+
+.player-result {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 20px 32px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    border: 2px solid transparent;
+    transition: border-color 0.3s;
+}
+
+.player-result.winner {
+    border-color: #facc15;
+    background: rgba(250, 204, 21, 0.08);
+}
+
+.player-name {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.6);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+.player-count {
+    font-size: 3rem;
+    font-weight: 900;
+    color: #4ade80;
+    line-height: 1;
+}
+
+@media (max-width: 700px) {
+    .battle-player-stat { padding: 8px 12px; }
+    .battle-player-stat .overlay-value { font-size: 2.5rem; }
+    .player-results { gap: 16px; }
+    .player-result { padding: 14px 20px; }
+    .player-count { font-size: 2.2rem; }
+    .winner-display { font-size: 2rem; }
+}
