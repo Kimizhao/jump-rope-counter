@@ -3,6 +3,7 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches:
+      - copilot/publish-github-page
       - main
   workflow_dispatch:
 
