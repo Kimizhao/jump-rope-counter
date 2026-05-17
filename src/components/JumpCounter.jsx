@@ -25,6 +25,9 @@ const JumpCounter = () => {
     const remainingTimeRef = useRef(60);
     const [customMinutes, setCustomMinutes] = useState('');
     const [showCustomInput, setShowCustomInput] = useState(false);
+    const [selectedRestMinutes, setSelectedRestMinutes] = useState(1);
+    const [restState, setRestState] = useState('IDLE'); // 'IDLE' | 'RUNNING' | 'DONE'
+    const [restRemainingTime, setRestRemainingTime] = useState(0);
 
     // Immersive Controls State
     const [showControls, setShowControls] = useState(false);
@@ -64,6 +67,7 @@ const JumpCounter = () => {
     const animFrameRef = useRef(null);
     const playerAssignmentRef = useRef({ p1X: null, p2X: null });
     const timerRef = useRef(null);
+    const restTimerRef = useRef(null);
 
     // Sync refs with state
     useEffect(() => { countRef.current = count; }, [count]);
@@ -88,6 +92,7 @@ const JumpCounter = () => {
         return () => {
             if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
             if (poseLandmarkerRef.current) poseLandmarkerRef.current.close();
+            if (restTimerRef.current) clearInterval(restTimerRef.current);
         };
     }, []);
 
@@ -132,6 +137,36 @@ const JumpCounter = () => {
             if (timerRef.current) clearInterval(timerRef.current);
         };
     }, [gameState, isPaused]);
+
+    // Rest timer logic
+    useEffect(() => {
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+        if (restState === 'RUNNING') {
+            restTimerRef.current = setInterval(() => {
+                setRestRemainingTime(prev => {
+                    const newValue = prev - 1;
+                    if (newValue <= 0) {
+                        if (restTimerRef.current) clearInterval(restTimerRef.current);
+                        setRestState('DONE');
+                        if (isMobile) {
+                            playStartBeep();
+                        } else {
+                            speak('休息时间到，请开始下一组');
+                        }
+                        return 0;
+                    }
+                    return newValue;
+                });
+            }, 1000);
+        } else {
+            if (restTimerRef.current) clearInterval(restTimerRef.current);
+        }
+
+        return () => {
+            if (restTimerRef.current) clearInterval(restTimerRef.current);
+        };
+    }, [restState]);
 
     // Assign two detected poses to P1 (left) and P2 (right) stably across frames
     const assignPosesToPlayers = useCallback((lm0, lm1) => {
@@ -400,6 +435,8 @@ const JumpCounter = () => {
 
         // Request Fullscreen immediately on user interaction
         enterFullscreen(videoWrapperRef.current);
+        setRestState('IDLE');
+        setRestRemainingTime(0);
 
         setGameState('COUNTDOWN');
         setCountdown(5);
@@ -575,7 +612,10 @@ const JumpCounter = () => {
         setIsJumping(false);
         setIsJumping2(false);
         setIsPaused(false);
+        setRestState('IDLE');
+        setRestRemainingTime(0);
         if (timerRef.current) clearInterval(timerRef.current);
+        if (restTimerRef.current) clearInterval(restTimerRef.current);
         // 停止录制
         stopRecording();
     };
@@ -588,6 +628,8 @@ const JumpCounter = () => {
         setGameState('FINISHED');
         setIsJumping(false);
         setIsJumping2(false);
+        setRestState('IDLE');
+        setRestRemainingTime(0);
         // 停止录制
         stopRecording();
 
@@ -600,6 +642,19 @@ const JumpCounter = () => {
         } else {
             speak('时间到，运动结束');
         }
+    };
+
+    const startRestTimer = () => {
+        const restSeconds = selectedRestMinutes * 60;
+        setRestRemainingTime(restSeconds);
+        setRestState('RUNNING');
+    };
+
+    const handleBackToIdle = () => {
+        setRestState('IDLE');
+        setRestRemainingTime(0);
+        if (restTimerRef.current) clearInterval(restTimerRef.current);
+        setGameState('IDLE');
     };
 
     const handleOverlayClick = (e) => {
@@ -728,7 +783,31 @@ const JumpCounter = () => {
                             {count} 次
                         </div>
                         <div className="countdown-text">运动完成!</div>
-                        <button className="control-btn start-btn" onClick={() => setGameState('IDLE')} style={{ marginTop: 20 }}>
+                        <div className="rest-panel">
+                            <div className="rest-title">休息时长</div>
+                            <div className="duration-selector">
+                                {[1, 2, 3, 5].map(min => (
+                                    <button
+                                        key={`single-rest-${min}`}
+                                        className={`duration-btn ${selectedRestMinutes === min ? 'active' : ''}`}
+                                        onClick={() => setSelectedRestMinutes(min)}
+                                        disabled={restState === 'RUNNING'}
+                                    >
+                                        {min}分
+                                    </button>
+                                ))}
+                            </div>
+                            {restState === 'RUNNING' && (
+                                <div className="rest-countdown">休息倒计时：{formatTime(restRemainingTime)}</div>
+                            )}
+                            {restState === 'DONE' && (
+                                <div className="rest-done">休息结束，准备开始下一组！</div>
+                            )}
+                            <button className="control-btn pause-btn" onClick={startRestTimer} disabled={restState === 'RUNNING'}>
+                                {restState === 'RUNNING' ? '休息中...' : '开始休息'}
+                            </button>
+                        </div>
+                        <button className="control-btn start-btn" onClick={handleBackToIdle} style={{ marginTop: 20 }}>
                             返回
                         </button>
                     </div>
@@ -751,7 +830,31 @@ const JumpCounter = () => {
                                     <span className="player-count">{count2} 次</span>
                                 </div>
                             </div>
-                            <button className="control-btn start-btn" onClick={() => setGameState('IDLE')} style={{ marginTop: 20 }}>
+                            <div className="rest-panel">
+                                <div className="rest-title">休息时长</div>
+                                <div className="duration-selector">
+                                    {[1, 2, 3, 5].map(min => (
+                                        <button
+                                            key={`battle-rest-${min}`}
+                                            className={`duration-btn ${selectedRestMinutes === min ? 'active' : ''}`}
+                                            onClick={() => setSelectedRestMinutes(min)}
+                                            disabled={restState === 'RUNNING'}
+                                        >
+                                            {min}分
+                                        </button>
+                                    ))}
+                                </div>
+                                {restState === 'RUNNING' && (
+                                    <div className="rest-countdown">休息倒计时：{formatTime(restRemainingTime)}</div>
+                                )}
+                                {restState === 'DONE' && (
+                                    <div className="rest-done">休息结束，准备开始下一组！</div>
+                                )}
+                                <button className="control-btn pause-btn" onClick={startRestTimer} disabled={restState === 'RUNNING'}>
+                                    {restState === 'RUNNING' ? '休息中...' : '开始休息'}
+                                </button>
+                            </div>
+                            <button className="control-btn start-btn" onClick={handleBackToIdle} style={{ marginTop: 20 }}>
                                 返回
                             </button>
                         </div>

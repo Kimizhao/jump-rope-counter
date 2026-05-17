@@ -423,6 +423,11 @@
     border-color: #22c55e;
 }
 
+.duration-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .custom-input-group {
     display: flex;
     gap: 8px;
@@ -729,6 +734,32 @@
     flex-direction: column;
     align-items: center;
     gap: 24px;
+}
+
+.rest-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.rest-title {
+    font-size: 1rem;
+    color: rgba(255, 255, 255, 0.85);
+    font-weight: 700;
+}
+
+.rest-countdown {
+    font-size: 1.05rem;
+    color: #facc15;
+    font-weight: 700;
+}
+
+.rest-done {
+    font-size: 1.05rem;
+    color: #4ade80;
+    font-weight: 700;
 }
 
 .winner-display {
