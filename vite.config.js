@@ -1,41 +1,35 @@
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, '.', '')
-  const base = env.VITE_BASE_PATH
-    ?? (env.GITHUB_REPOSITORY ? `/${env.GITHUB_REPOSITORY.split('/')[1]}/` : '/')
-
-  return {
-    base,
-    plugins: [
-      react(),
-      VitePWA({
-        registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
-        workbox: {
-          maximumFileSizeToCacheInBytes: 10 * 1024 * 1024 // 10 MB to accommodate MediaPipe WASM files
-        },
-        manifest: {
-          name: 'Jump Rope Counter',
-          short_name: 'JumpCounter',
-          description: 'AI-powered Jump Rope Counter',
-          theme_color: '#1a1a1a',
-          background_color: '#1a1a1a',
-          display: 'standalone',
-          orientation: 'portrait',
-          icons: [
-            {
-              src: 'icon.svg',
-              sizes: 'any',
-              type: 'image/svg+xml',
-              purpose: 'any maskable'
-            }
-          ]
-        }
-      })
-    ],
-  }
+export default defineConfig({
+  base: '/jump-rope-counter/',
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
+      workbox: {
+        maximumFileSizeToCacheInBytes: 10 * 1024 * 1024 // 10 MB to accommodate MediaPipe WASM files
+      },
+      manifest: {
+        name: 'Jump Rope Counter',
+        short_name: 'JumpCounter',
+        description: 'AI-powered Jump Rope Counter',
+        theme_color: '#1a1a1a',
+        background_color: '#1a1a1a',
+        display: 'standalone',
+        orientation: 'portrait',
+        icons: [
+          {
+            src: 'icon.svg',
+            sizes: 'any',
+            type: 'image/svg+xml',
+            purpose: 'any maskable'
+          }
+        ]
+      }
+    })
+  ],
 })
