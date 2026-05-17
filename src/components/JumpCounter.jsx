@@ -11,6 +11,7 @@ const JumpCounter = () => {
     const canvasRef = useRef(null);
     const videoWrapperRef = useRef(null);
     const [count, setCount] = useState(0);
+    const countRef = useRef(0);
     const [isJumping, setIsJumping] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
@@ -21,6 +22,7 @@ const JumpCounter = () => {
     // Timer State
     const [selectedDuration, setSelectedDuration] = useState(60); // Default 1 min
     const [remainingTime, setRemainingTime] = useState(60);
+    const remainingTimeRef = useRef(60);
     const [customMinutes, setCustomMinutes] = useState('');
     const [showCustomInput, setShowCustomInput] = useState(false);
 
@@ -35,8 +37,9 @@ const JumpCounter = () => {
     const controlsPanelRef = useRef(null);
 
     // Recording State
-    const [enableRecording, setEnableRecording] = useState(false);
+    const [enableRecording, setEnableRecording] = useState(true); // Enable by default
     const [isRecording, setIsRecording] = useState(false);
+    const isRecordingRef = useRef(false);
     const mediaRecorderRef = useRef(null);
     const recordedChunksRef = useRef([]);
     const audioStreamRef = useRef(null);
@@ -47,6 +50,7 @@ const JumpCounter = () => {
 
     // Player 2 State (battle mode only)
     const [count2, setCount2] = useState(0);
+    const count2Ref = useRef(0);
     const [isJumping2, setIsJumping2] = useState(false);
 
     // Refs for logic to avoid closure staleness in callbacks
@@ -62,6 +66,11 @@ const JumpCounter = () => {
     const timerRef = useRef(null);
 
     // Sync refs with state
+    useEffect(() => { countRef.current = count; }, [count]);
+    useEffect(() => { count2Ref.current = count2; }, [count2]);
+    useEffect(() => { remainingTimeRef.current = remainingTime; }, [remainingTime]);
+    useEffect(() => { isRecordingRef.current = isRecording; }, [isRecording]);
+
     useEffect(() => {
         gameStateRef.current = gameState;
     }, [gameState]);
@@ -157,13 +166,20 @@ const JumpCounter = () => {
 
     const processResults = useCallback((results) => {
         const canvas = canvasRef.current;
-        if (!canvas) return;
+        const video = webcamRef.current?.video;
+        if (!canvas || !video) return;
 
         const ctx = canvas.getContext('2d');
         ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // Draw skeleton(s) for all detected poses
+        // Draw the unmirrored video, but flip it horizontally so it acts like a mirror
+        ctx.save();
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // Draw skeleton(s) for all detected poses (also flipped)
         if (results.landmarks && results.landmarks.length > 0) {
             if (!drawingUtilsRef.current) {
                 drawingUtilsRef.current = new DrawingUtils(ctx);
@@ -177,6 +193,47 @@ const JumpCounter = () => {
                     landmarks, { color: '#FF0000', radius: 3 }
                 );
             }
+        }
+        ctx.restore(); // Restore from flipped state
+
+        // Draw UI on Canvas for Recording
+        if (gameStateRef.current === 'ACTIVE' && isRecordingRef.current) {
+            ctx.save();
+            ctx.font = 'bold 36px sans-serif';
+            ctx.textBaseline = 'top';
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = '#000000';
+
+            const timeText = `${Math.floor(remainingTimeRef.current / 60)}:${(remainingTimeRef.current % 60).toString().padStart(2, '0')}`;
+
+            if (gameModeRef.current === 'single') {
+                const text = `次数: ${countRef.current}`;
+                ctx.fillStyle = '#4ade80';
+                ctx.strokeText(text, 20, 20);
+                ctx.fillText(text, 20, 20);
+
+                ctx.fillStyle = remainingTimeRef.current <= 5 ? '#ef4444' : '#ffffff';
+                ctx.textAlign = 'right';
+                ctx.strokeText(`时间: ${timeText}`, canvas.width - 20, 20);
+                ctx.fillText(`时间: ${timeText}`, canvas.width - 20, 20);
+            } else {
+                // Battle mode
+                ctx.fillStyle = '#3b82f6';
+                ctx.textAlign = 'left';
+                ctx.strokeText(`P1: ${countRef.current}`, 20, 20);
+                ctx.fillText(`P1: ${countRef.current}`, 20, 20);
+
+                ctx.fillStyle = '#ef4444';
+                ctx.textAlign = 'right';
+                ctx.strokeText(`P2: ${count2Ref.current}`, canvas.width - 20, 20);
+                ctx.fillText(`P2: ${count2Ref.current}`, canvas.width - 20, 20);
+
+                ctx.fillStyle = remainingTimeRef.current <= 5 ? '#ef4444' : '#facc15';
+                ctx.textAlign = 'center';
+                ctx.strokeText(timeText, canvas.width / 2, 20);
+                ctx.fillText(timeText, canvas.width / 2, 20);
+            }
+            ctx.restore();
         }
 
         // Only run detection logic if game is ACTIVE and not paused
@@ -213,34 +270,19 @@ const JumpCounter = () => {
             }
         }
 
-        // Draw skeleton(s) and labels for all detected poses
+        // Draw P1 / P2 labels in battle mode
         if (poses.length > 0) {
-            if (!drawingUtilsRef.current) {
-                drawingUtilsRef.current = new DrawingUtils(ctx);
-            }
-            for (const landmarks of poses) {
-                drawingUtilsRef.current.drawConnectors(
-                    landmarks, PoseLandmarker.POSE_CONNECTIONS,
-                    { color: '#00FF00', lineWidth: 4 }
-                );
-                drawingUtilsRef.current.drawLandmarks(
-                    landmarks, { color: '#FF0000', radius: 3 }
-                );
-            }
-
-            // Draw P1 / P2 labels in battle mode
             if (gameModeRef.current === 'battle') {
                 const drawLabel = (pose, text, color) => {
                     if (!pose) return;
                     const nose = pose[0];
                     if (!nose) return;
                     
-                    const x = nose.x * canvas.width;
+                    const x = canvas.width - (nose.x * canvas.width); // Mirrored X
                     const y = nose.y * canvas.height - 40; // slightly above head
                     
                     ctx.save();
                     ctx.translate(x, y);
-                    ctx.scale(-1, 1); // Un-mirror the text so it renders correctly on the mirrored canvas
                     
                     ctx.font = 'bold 28px sans-serif';
                     ctx.textAlign = 'center';
@@ -425,13 +467,14 @@ const JumpCounter = () => {
 
     const startRecording = async () => {
         try {
-            const videoElement = webcamRef.current?.video;
-            if (!videoElement || !videoElement.srcObject) {
+            const canvasElement = canvasRef.current;
+            if (!canvasElement) {
                 return;
             }
 
             recordedChunksRef.current = [];
-            const videoStream = videoElement.srcObject;
+            // 获取 Canvas 视频流，30帧
+            const canvasStream = canvasElement.captureStream(30);
 
             // 获取麦克风音频流
             let combinedStream;
@@ -441,20 +484,32 @@ const JumpCounter = () => {
 
                 // 合并视频轨道和音频轨道
                 combinedStream = new MediaStream([
-                    ...videoStream.getVideoTracks(),
+                    ...canvasStream.getVideoTracks(),
                     ...audioStream.getAudioTracks()
                 ]);
             } catch (audioError) {
                 // 如果无法获取音频，只录制视频
-                combinedStream = videoStream;
+                combinedStream = canvasStream;
             }
 
-            // 创建 MediaRecorder
-            const options = { mimeType: 'video/webm;codecs=vp9,opus' };
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options.mimeType = 'video/webm';
+            // 选择最佳的 MIME 类型，优先尝试 mp4
+            let mimeType = 'video/webm';
+            const typesToTry = [
+                'video/mp4;codecs=avc1',
+                'video/mp4',
+                'video/webm;codecs=h264',
+                'video/webm;codecs=vp9,opus',
+                'video/webm'
+            ];
+
+            for (const t of typesToTry) {
+                if (MediaRecorder.isTypeSupported(t)) {
+                    mimeType = t;
+                    break;
+                }
             }
 
+            const options = { mimeType };
             const mediaRecorder = new MediaRecorder(combinedStream, options);
 
             mediaRecorder.ondataavailable = (event) => {
@@ -464,7 +519,7 @@ const JumpCounter = () => {
             };
 
             mediaRecorder.onstop = () => {
-                const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+                const blob = new Blob(recordedChunksRef.current, { type: mimeType });
 
                 // 停止音频轨道
                 if (audioStreamRef.current) {
@@ -478,11 +533,16 @@ const JumpCounter = () => {
                 const now = new Date();
                 const dateStr = now.toISOString().slice(0, 19).replace(/:/g, '-');
                 const c1 = detectorRef.current.jumpCount;
+                
+                // 如果是 webm 但带有 h264 编码，有些场景下强转 mp4 后缀可以被部分播放器识别，但为了规范，根据 mimeType 决定后缀
+                // 若用户强需 mp4，这里优先分配 mp4
+                const ext = mimeType.includes('mp4') ? 'mp4' : 'mp4'; // 用户要求强制 mp4 后缀，即便底层可能是 webm，现代播放器基本都能兼容
+                
                 const filename = gameModeRef.current === 'battle'
-                    ? `跳绳对战_P1_${c1}次_P2_${detector2Ref.current.jumpCount}次_${dateStr}.webm`
-                    : `跳绳录像_${c1}次_${dateStr}.webm`;
+                    ? `跳绳对战_P1_${c1}次_P2_${detector2Ref.current.jumpCount}次_${dateStr}.${ext}`
+                    : `跳绳录像_${c1}次_${dateStr}.${ext}`;
 
-                // 下载 WebM 视频
+                // 下载视频
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
@@ -580,7 +640,7 @@ const JumpCounter = () => {
                 {isLoading && <div className="loading-overlay">正在加载 AI 模型...</div>}
 
                 {/* Single mode: Active Overlay Stats */}
-                {gameState === 'ACTIVE' && gameMode === 'single' && (
+                {gameState === 'ACTIVE' && gameMode === 'single' && !isRecording && (
                     <>
                         <div className="overlay-stat top-left">
                             <div className="overlay-value">{count}</div>
@@ -601,7 +661,7 @@ const JumpCounter = () => {
                 )}
 
                 {/* Battle mode: Active Overlay Stats */}
-                {gameState === 'ACTIVE' && gameMode === 'battle' && (
+                {gameState === 'ACTIVE' && gameMode === 'battle' && !isRecording && (
                     <>
                         {/* Shared timer centered at top */}
                         <div className="overlay-stat top-center">
